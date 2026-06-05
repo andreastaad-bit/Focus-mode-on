@@ -1,0 +1,6 @@
+{
+  "name": "Focus Video Creator & Player",
+  "description": "An interactive workstation and real-time simulator for creating, testing, and customizing YouTube focus videos with binaural beats, guided drawing, and box breathing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
