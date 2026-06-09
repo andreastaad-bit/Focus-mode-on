@@ -180,14 +180,15 @@ export default function App() {
                   return (
                     <div 
                       key={seg.id}
-                      onClick={() => {
-                        // Calculate first seconds offset
-                        let accOffset = 0;
-                        for (let j = 0; j < idx; j++) {
-                          accOffset += segments[j].duration_minutes * 60;
-                        }
-                        setForceSec(accOffset);
-                      }}
+                    onClick={() => {
+  let accOffset = 0;
+  for (let j = 0; j < idx; j++) {
+    accOffset += segments[j].duration_minutes * 60;
+  }
+  // Reset to null first to force React to detect the change
+  setForceSec(null);
+  setTimeout(() => setForceSec(accOffset), 10);
+}}
                       id={`tracker_segment_card_${seg.id}`}
                       className={`p-3 rounded-lg border transition text-left cursor-pointer select-none relative overflow-hidden ${
                         isActive 
