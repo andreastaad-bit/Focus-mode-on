@@ -78,6 +78,12 @@ export function VideoPlayer({
     stateRef.current.selectedDoodleIndex = selectedDoodleIndex;
   }, [isPlaying, currentTimeSec, isFastTrack, activeSegmentId, selectedDoodleIndex]);
 
+  useEffect(() => {
+    setCurrentTimeSec(0);
+    stateRef.current.currentTimeSec = 0;
+    previousTimeRef.current = null;
+  }, [sessionData]);
+
   // Handle external scrubs
   useEffect(() => {
     if (forceSec !== undefined && forceSec !== null) {
@@ -199,12 +205,14 @@ export function VideoPlayer({
     requestRef.current = requestAnimationFrame(animate);
   };
 
-  useEffect(() => {
+ useEffect(() => {
+    if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    previousTimeRef.current = null;
     requestRef.current = requestAnimationFrame(animate);
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [activeSegmentId, selectedDoodleIndex]);
+  }, [activeSegmentId, selectedDoodleIndex, sessionData]);
 
   // Render method based on segment type
   const renderFrame = () => {
