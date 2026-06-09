@@ -768,8 +768,37 @@ export function VideoPlayer({
   const handleTimelineChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
     setCurrentTimeSec(val);
+    stateRef.current.currentTimeSec = val;
     onTimeUpdate(val);
-    updateActiveSegmentFromSeconds(val);
+    
+    // Find target segment
+    let targetSegIndex = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const start = segmentOffsets.current[i];
+      const end = start + segments[i].duration_minutes * 60;
+      if (val >= start && val < end) {
+        targetSegIndex = i;
+        break;
+      }
+    }
+    if (val >= totalDurationSeconds.current) {
+      targetSegIndex = segments.length - 1;
+    }
+
+    const nextSegId = segments[targetSegIndex].id;
+    // Force update regardless of whether segment changed
+    setActiveSegmentId(nextSegId);
+    stateRef.current.activeSegmentId = nextSegId;
+    
+    const subSegId = getSubsegmentId(
+      nextSegId, 
+      val - segmentOffsets.current[targetSegIndex]
+    );
+    
+    // Trigger audio for the new position immediately
+    setTimeout(() => {
+      handleAudioForSegment(nextSegId, subSegId);
+    }, 50);
   };
 
   const getActivePalette = () => {
