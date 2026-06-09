@@ -85,10 +85,34 @@ export function VideoPlayer({
   }, [sessionData]);
 
   // Handle external scrubs
-  useEffect(() => {
+ useEffect(() => {
     if (forceSec !== undefined && forceSec !== null) {
       setCurrentTimeSec(forceSec);
-      updateActiveSegmentFromSeconds(forceSec);
+      stateRef.current.currentTimeSec = forceSec;
+      
+      let targetSegIndex = 0;
+      for (let i = 0; i < segments.length; i++) {
+        const start = segmentOffsets.current[i];
+        const end = start + segments[i].duration_minutes * 60;
+        if (forceSec >= start && forceSec < end) {
+          targetSegIndex = i;
+          break;
+        }
+      }
+      
+      const nextSegId = segments[targetSegIndex].id;
+      setActiveSegmentId(nextSegId);
+      stateRef.current.activeSegmentId = nextSegId;
+      
+      const subSegId = getSubsegmentId(
+        nextSegId,
+        forceSec - segmentOffsets.current[targetSegIndex]
+      );
+      
+      setTimeout(() => {
+        handleAudioForSegment(nextSegId, subSegId);
+      }, 50);
+      
       if (clearForceSec) clearForceSec();
     }
   }, [forceSec]);
