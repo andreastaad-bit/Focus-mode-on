@@ -130,34 +130,21 @@ export function VideoPlayer({
     }
 
     if (segId === "block_1_alpha") {
+     if (segId === "block_1_alpha") {
       globalAudioEngine.resume();
       globalAudioEngine.startAmbient();
-      globalAudioEngine.startBinaural(200, 10); // Alpha 10 Hz beat
+      // Read beat frequency from session data
+      const seg1 = segments.find(s => s.id === "block_1_alpha");
+      const beatHz1 = seg1?.audio?.beat_frequency_hz || 10;
+      globalAudioEngine.startBinaural(200, beatHz1);
       globalAudioEngine.stopDoodleMusic();
     } else if (segId === "block_2_gamma") {
       globalAudioEngine.resume();
       globalAudioEngine.startAmbient();
-      globalAudioEngine.startBinaural(200, 40); // Gamma 40 Hz beat
+      const seg2 = segments.find(s => s.id === "block_2_gamma");
+      const beatHz2 = seg2?.audio?.beat_frequency_hz || 40;
+      globalAudioEngine.startBinaural(200, beatHz2);
       globalAudioEngine.stopDoodleMusic();
-    } else if (segId === "break_1_doodle") {
-      globalAudioEngine.stopBinaural();
-      if (subSegId === "prep_timer") {
-        globalAudioEngine.stopAmbient();
-        globalAudioEngine.stopDoodleMusic();
-      } else {
-        // Doodle trace session
-        globalAudioEngine.startDoodleMusic();
-        globalAudioEngine.stopAmbient();
-      }
-    } else if (segId === "break_2_breathing") {
-      globalAudioEngine.stopBinaural();
-      globalAudioEngine.stopAmbient();
-      globalAudioEngine.stopDoodleMusic();
-      // Chimes are played programmatically on phase transitions inside drawing loop!
-    } else {
-      globalAudioEngine.stopAll();
-    }
-  };
 
   // Convert absolute session seconds to segment index and internal relative seconds
   const updateActiveSegmentFromSeconds = (secs: number) => {
@@ -282,8 +269,75 @@ export function VideoPlayer({
   };
 
   // --- DRAW RIVER ---
-  const drawRiverFlow = (ctx: CanvasRenderingContext2D, w: number, h: number, elapsedSec: number, segId: string) => {
-    // Colors from Palette
+const drawRiverFlow = (ctx: CanvasRenderingContext2D, w: number, h: number, elapsedSec: number, segId: string) => {
+    // Get active palette from current session
+    const activeSeg = segments.find(s => s.id === segId);
+    const palette = activeSeg?.visual?.color_palette;
+    const color1 = palette?.primary || "#A8C8B8";
+    const color2 = palette?.secondary || "#D4E8E0";
+    const color3 = palette?.accent || "#8BB5C8";
+
+    // Background color derived from palette
+    const bgDark = palette?.primary ? palette.primary + "22" : "#081C15";
+
+    const timeScale = elapsedSec * 0.4;
+    
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, bgDark);
+    grad.addColorStop(0.5, "#0A0F1A");
+    grad.addColorStop(1, "#040810");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    const renderWaveLayer = (layerIdx: number, baseHeight: number, waveHeight: number, speedMult: number, color: string, alpha: number) => {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+      const segmentsCount = 60;
+      for (let i = 0; i <= segmentsCount; i++) {
+        const x = (i / segmentsCount) * w;
+        const slowSwell = Math.sin((i / 8) + timeScale * speedMult + layerIdx);
+        const fastRipple = Math.cos((i / 2) - timeScale * 1.5 * speedMult + layerIdx * 2) * 2;
+        const swellShift = Math.sin(timeScale * 0.1 + layerIdx) * waveHeight * 0.3;
+        const y = baseHeight + slowSwell * waveHeight + fastRipple + swellShift;
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(w, h);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    };
+
+    renderWaveLayer(0, h * 0.40, 24, 0.4, color3, 0.12);
+    renderWaveLayer(1, h * 0.48, 18, 0.6, color1, 0.16);
+    renderWaveLayer(2, h * 0.55, 14, 0.8, color2, 0.18);
+    renderWaveLayer(3, h * 0.64, 20, 0.5, color3, 0.15);
+    renderWaveLayer(4, h * 0.72, 12, 1.1, color1, 0.22);
+
+    ctx.save();
+    ctx.fillStyle = color2;
+    for (let i = 0; i < 15; i++) {
+      const seed = Math.sin(i * 123.456) * 500;
+      const x = Math.abs(seed + timeScale * 15) % (w + 40) - 20;
+      const y = Math.abs(Math.cos(i * 88.2) * (h - 100)) + 50 + Math.sin(timeScale * 0.2 + i) * 15;
+      const size = Math.abs(Math.sin(i + timeScale * 0.1)) * 2 + 1;
+      ctx.globalAlpha = 0.3 * Math.abs(Math.sin(timeScale * 0.05 + i));
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    ctx.save();
+    ctx.font = "italic 300 13px 'Inter', sans-serif";
+    ctx.fillStyle = color3;
+    ctx.globalAlpha = 0.45;
+    ctx.textAlign = "left";
+    ctx.fillText(segId === "block_1_alpha" ? "ALPHA WAVES  ·  FOCUS FLOW" : "GAMMA WAVES  ·  COGNITIVE FOCUS", 25, 35);
+    ctx.restore();
+  };
     // Sage Green: #A8C8B8
     // Soft Cream: #D4E8E0
     // Accent Blue-Gray: #8BB5C8
