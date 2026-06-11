@@ -4,7 +4,6 @@ import { globalAudioEngine } from "./AudioEngine";
 import { Play, Pause, RotateCcw, FastForward, Headphones, Info } from "lucide-react";
 import { Spectrogram } from "./Spectrogram";
 
-// 1. Configuración de Plantillas
 const TEMPLATES: any = {
   lluvia: {
     id: 'lluvia',
@@ -59,21 +58,13 @@ export function VideoPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
   const [activeTemplate, setActiveTemplate] = useState(TEMPLATES.bosque);
-
   const requestRef = useRef<number | null>(null);
   const previousTimeRef = useRef<number | null>(null);
   
-  // Seguridad: Verificar que sessionData existe
   const segments = sessionData?.video_prompt?.segments || [];
   const segmentOffsets = useRef<number[]>([]);
   const totalDurationSeconds = useRef(0);
-
-  const stateRef = useRef({ 
-    isPlaying, 
-    currentTimeSec, 
-    activeSegmentId, 
-    isFastTrack 
-  });
+  const stateRef = useRef({ isPlaying, currentTimeSec, activeSegmentId, isFastTrack });
 
   useEffect(() => {
     let acc = 0;
@@ -98,14 +89,12 @@ export function VideoPlayer({
 
   const handleAudioForSegment = (segId: string, time: number) => {
     if (!stateRef.current.isPlaying || !globalAudioEngine) return;
-
     const segIdx = segments.findIndex(s => s.id === segId);
     if (segIdx === -1) return;
     const relSec = time - segmentOffsets.current[segIdx];
 
     try {
         globalAudioEngine.resume();
-
         if (segId === "break_1_doodle" && relSec >= 15) {
             globalAudioEngine.stopBinaural();
             globalAudioEngine.stopAmbient();
@@ -119,9 +108,7 @@ export function VideoPlayer({
             globalAudioEngine.stopBinaural();
             if (globalAudioEngine.stopDoodleMusic) globalAudioEngine.stopDoodleMusic();
         }
-    } catch (e) {
-        console.error("Audio Engine Error:", e);
-    }
+    } catch (e) { console.error(e); }
   };
 
   const syncSegmentAndTime = (newTime: number) => {
@@ -142,13 +129,10 @@ export function VideoPlayer({
       const delta = (time - previousTimeRef.current) / 1000;
       const multiplier = stateRef.current.isFastTrack ? 120 : 1;
       const nextTime = stateRef.current.currentTimeSec + (delta * multiplier);
-
       if (nextTime >= totalDurationSeconds.current) {
         setIsPlaying(false);
         if (globalAudioEngine) globalAudioEngine.stopAll();
-      } else {
-        syncSegmentAndTime(nextTime);
-      }
+      } else { syncSegmentAndTime(nextTime); }
     }
     previousTimeRef.current = time;
     renderFrame();
@@ -160,28 +144,57 @@ export function VideoPlayer({
     return () => { if (requestRef.current) cancelAnimationFrame(requestRef.current); };
   }, [activeTemplate, isPlaying]);
 
+  const drawRiver = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
+    const mainColor = activeTemplate.colorPrincipal;
+    const darkColor = activeTemplate.colorSecundario;
+    const timeScale = Date.now() * 0.0008; 
+    
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, "#050A14");
+    grad.addColorStop(0.5, "#0A0F1E");
+    grad.addColorStop(1, "#02050A");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    const renderWaveLayer = (layerIdx: number, baseHeight: number, waveHeight: number, speed: number, color: string, alpha: number) => {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+      for (let i = 0; i <= 40; i++) {
+        const x = (i / 40) * w;
+        const wave = Math.sin((i * 0.15) + (timeScale * speed) + layerIdx);
+        const y = baseHeight + wave * waveHeight;
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(w, h);
+      ctx.fill();
+      ctx.restore();
+    };
+
+    renderWaveLayer(1, h * 0.45, 20, 0.4, darkColor, 0.3);
+    renderWaveLayer(2, h * 0.55, 15, 0.7, mainColor, 0.4);
+    renderWaveLayer(3, h * 0.70, 10, 1.1, "#FFFFFF", 0.1); 
+    renderWaveLayer(4, h * 0.82, 18, 0.6, mainColor, 0.4);
+  };
+
   const renderFrame = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-
     const w = canvas.width;
     const h = canvas.height;
     const currentId = stateRef.current.activeSegmentId;
     const segIdx = segments.findIndex(s => s.id === currentId);
     
-    // Evitar errores si no encuentra el segmento
     if (segIdx === -1) {
-        ctx.fillStyle = "#000";
-        ctx.fillRect(0, 0, w, h);
-        return;
+        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h); return;
     }
 
     const relSec = stateRef.current.currentTimeSec - segmentOffsets.current[segIdx];
-
-    ctx.fillStyle = "#0A0F1A";
-    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#0A0F1A"; ctx.fillRect(0, 0, w, h);
 
     if (currentId.includes("block")) {
         drawRiver(ctx, w, h);
@@ -189,23 +202,8 @@ export function VideoPlayer({
         if (relSec < 15) drawTimer(ctx, w, h, 15 - relSec);
         else drawDoodle(ctx, w, h, (relSec - 15) / 585);
     } else {
-        // Fondo por defecto para otros bloques (respiración, etc.)
-        ctx.fillStyle = "#0A0F1A";
-        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = "#0A0F1A"; ctx.fillRect(0, 0, w, h);
     }
-  };
-
-  const drawRiver = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
-    ctx.fillStyle = activeTemplate.colorPrincipal + "22";
-    ctx.beginPath();
-    ctx.arc(w/2, h/2, 100 + Math.sin(Date.now()/1000)*20, 0, Math.PI*2);
-    ctx.fill();
-    ctx.fillStyle = "#FFF";
-    ctx.font = "12px Inter";
-    ctx.textAlign = "center";
-    ctx.globalAlpha = 0.5;
-    ctx.fillText(`MODO: ${activeTemplate.nombre.toUpperCase()}`, w/2, h - 20);
-    ctx.globalAlpha = 1;
   };
 
   const drawTimer = (ctx: CanvasRenderingContext2D, w: number, h: number, rem: number) => {
@@ -217,34 +215,26 @@ export function VideoPlayer({
 
   const drawDoodle = (ctx: CanvasRenderingContext2D, w: number, h: number, progress: number) => {
     const cx = w / 2; const cy = h / 2;
-    // Función matemática para la figura (Espirales rítmicas)
     const getCoords = (p: number) => {
         const loops = 12; 
         const angle = p * Math.PI * loops;
         const r = p * (h / 2.5);
         return { x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r };
     };
-
     ctx.strokeStyle = activeTemplate.colorPrincipal;
     ctx.lineWidth = 3;
     ctx.lineCap = "round";
     ctx.beginPath();
-    // Dibujar rastro
     for (let i = 0; i <= progress; i += 0.002) {
         const p = getCoords(i);
         if (i === 0) ctx.moveTo(p.x, p.y);
         else ctx.lineTo(p.x, p.y);
     }
     ctx.stroke();
-
-    // Punto guía
     const head = getCoords(progress);
     ctx.fillStyle = "#FFF";
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = "#FFF";
-    ctx.beginPath();
-    ctx.arc(head.x, head.y, 6, 0, Math.PI*2);
-    ctx.fill();
+    ctx.shadowBlur = 10; ctx.shadowColor = "#FFF";
+    ctx.beginPath(); ctx.arc(head.x, head.y, 6, 0, Math.PI*2); ctx.fill();
     ctx.shadowBlur = 0;
   };
 
@@ -267,7 +257,6 @@ export function VideoPlayer({
             </div>
         )}
       </div>
-
       <div className="p-4 bg-slate-950 space-y-4">
         <div className="flex gap-2 overflow-x-auto">
             {Object.values(TEMPLATES).map((t: any) => (
@@ -283,13 +272,11 @@ export function VideoPlayer({
                 </button>
             ))}
         </div>
-
         <input 
             type="range" min={0} max={totalDurationSeconds.current || 100} value={currentTimeSec}
             onChange={(e) => syncSegmentAndTime(parseFloat(e.target.value))}
             className="w-full accent-teal-500"
         />
-
         <div className="flex justify-between items-center">
             <button onClick={handleTogglePlay} className="text-teal-400 p-2 bg-slate-800 rounded-lg">
                 {isPlaying ? <Pause size={20}/> : <Play size={20} fill="currentColor"/>}
@@ -305,7 +292,6 @@ export function VideoPlayer({
             </button>
         </div>
       </div>
-      
       {activeTemplate && (
           <Spectrogram 
             activeSegmentId={activeSegmentId} 
