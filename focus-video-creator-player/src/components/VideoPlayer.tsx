@@ -226,5 +226,133 @@ export function VideoPlayer({
     ctx.fill();
   };
 
+ // ... (dentro de tu función VideoPlayer, después de todas las funciones de dibujo)
+
   return (
-    <div className="flex flex-col bg-slate-900 rounded-xl overflow-hidde
+    <div className="flex flex-col bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-800">
+      <div className="relative aspect-video bg-black">
+        <canvas 
+          ref={canvasRef} 
+          width={720} 
+          height={405} 
+          className="w-full h-full cursor-pointer" 
+          onClick={handleTogglePlay}
+        />
+        
+        {!isPlaying && (
+          <div 
+            className="absolute inset-0 flex items-center justify-center bg-black/40 cursor-pointer"
+            onClick={handleTogglePlay}
+          >
+            <div className="w-20 h-20 bg-teal-500 rounded-full flex items-center justify-center shadow-inner hover:scale-110 transition-transform">
+              <Play size={40} className="text-slate-900 ml-2" fill="currentColor" />
+            </div>
+          </div>
+        )}
+
+        {/* Indicador de Atmósfera Actual */}
+        <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1 rounded-full bg-slate-950/80 text-[10px] text-slate-300 border border-white/10">
+          <Headphones className="w-3 h-3 text-teal-400" />
+          <span>{activeTemplate.label}</span>
+        </div>
+      </div>
+
+      <div className="p-4 bg-slate-950/90 border-t border-slate-800 space-y-5">
+        
+        {/* 1. Selector de Atmósfera */}
+        <div className="flex flex-col gap-2">
+          <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Cambiar Atmósfera:</span>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {Object.values(TEMPLATES).map((t) => (
+              <button
+                key={t.id}
+                onClick={() => {
+                  setActiveTemplate(t);
+                  if (isPlaying) setTimeout(() => handleAudioForSegment(activeSegmentId, currentTimeSec), 50);
+                }}
+                className={`px-4 py-1.5 rounded-full text-xs font-medium transition whitespace-nowrap ${
+                  activeTemplate.id === t.id 
+                  ? "bg-teal-500 text-slate-900 shadow-lg shadow-teal-500/20" 
+                  : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+                }`}
+              >
+                {t.nombre}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 2. Barra de Progreso / Timeline */}
+        <div className="space-y-1">
+          <input 
+            type="range" 
+            min={0} 
+            max={totalDurationSeconds.current} 
+            value={currentTimeSec}
+            onChange={(e) => syncSegmentAndTime(parseFloat(e.target.value))}
+            className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-teal-500 hover:accent-teal-400"
+          />
+          <div className="flex justify-between text-[10px] font-mono text-slate-500">
+            <span>{Math.floor(currentTimeSec / 60)}:{(currentTimeSec % 60).toFixed(0).padStart(2, '0')}</span>
+            <span>{Math.floor(totalDurationSeconds.current / 60)}:00</span>
+          </div>
+        </div>
+
+        {/* 3. Controles Principales */}
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={handleTogglePlay}
+              className={`p-3 rounded-xl transition-all ${
+                isPlaying ? "bg-slate-800 text-teal-400 border border-teal-500/30" : "bg-teal-500 text-slate-900"
+              }`}
+            >
+              {isPlaying ? <Pause size={20} /> : <Play size={20} fill="currentColor" />}
+            </button>
+            
+            <button 
+              onClick={() => {
+                setIsPlaying(false);
+                setCurrentTimeSec(0);
+                globalAudioEngine.stopAll();
+              }}
+              className="p-3 bg-slate-800 text-slate-400 rounded-xl hover:text-white transition"
+            >
+              <RotateCcw size={20} />
+            </button>
+          </div>
+
+          {/* Selector de Modo */}
+          <div className="flex items-center bg-slate-900 p-1 rounded-xl border border-slate-800">
+            <button 
+              onClick={() => setIsFastTrack(false)} 
+              className={`px-3 py-1.5 text-[10px] font-bold rounded-lg transition ${!isFastTrack ? "bg-slate-800 text-teal-400" : "text-slate-500"}`}
+            >
+              REAL
+            </button>
+            <button 
+              onClick={() => setIsFastTrack(true)} 
+              className={`flex items-center gap-1 px-3 py-1.5 text-[10px] font-bold rounded-lg transition ${isFastTrack ? "bg-amber-500/20 text-amber-500" : "text-slate-500"}`}
+            >
+              <FastForward size={12} />
+              PRUEBA
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <Spectrogram 
+        activeSegmentId={activeSegmentId} 
+        isPlaying={isPlaying} 
+        currentTimeSec={currentTimeSec} 
+        palette={{
+          primary: activeTemplate.colorPrincipal, 
+          secondary: activeTemplate.colorSecundario, 
+          accent: "#FFFFFF"
+        }}
+      />
+    </div>
+  );
+}
+
+export default VideoPlayer;
