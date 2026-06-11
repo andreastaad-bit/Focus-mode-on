@@ -1,35 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Segment, SessionData } from "../types";
+import { Segment, SubSegment, SessionData } from "../types";
 import { globalAudioEngine } from "./AudioEngine";
-import { Play, Pause, RotateCcw, FastForward, Headphones, Info } from "lucide-react";
+import { Play, Pause, RotateCcw, FastForward, Headphones, Info, Compass, HelpCircle } from "lucide-react";
 import { Spectrogram } from "./Spectrogram";
-
-const TEMPLATES: any = {
-  lluvia: {
-    id: 'lluvia',
-    nombre: 'Lluvia Profunda',
-    colorPrincipal: '#8BB5C8', 
-    colorSecundario: '#5A7D8C',
-    frecuenciaBase: 174,
-    label: '174Hz - Alivio'
-  },
-  bosque: {
-    id: 'bosque',
-    nombre: 'Manantial Zen',
-    colorPrincipal: '#A8C8B8', 
-    colorSecundario: '#5F8571',
-    frecuenciaBase: 432,
-    label: '432Hz - Naturaleza'
-  },
-  oceano: {
-    id: 'oceano',
-    nombre: 'Océano Alfa',
-    colorPrincipal: '#2980b9', 
-    colorSecundario: '#1a5276',
-    frecuenciaBase: 528,
-    label: '528Hz - Energía'
-  }
-};
 
 interface VideoPlayerProps {
   sessionData: SessionData;
@@ -38,6 +11,8 @@ interface VideoPlayerProps {
   isFastTrack: boolean;
   setIsFastTrack: (val: boolean) => void;
   onTimeUpdate: (currentSeconds: number) => void;
+  forceSec?: number | null;
+  clearForceSec?: () => void;
   ambientVolume: number;
   binauralVolume: number;
   doodleVolume: number;
@@ -50,256 +25,815 @@ export function VideoPlayer({
   isFastTrack,
   setIsFastTrack,
   onTimeUpdate,
+  forceSec,
+  clearForceSec,
   ambientVolume,
   binauralVolume,
   doodleVolume
 }: VideoPlayerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTimeSec, setCurrentTimeSec] = useState(0);
-  const [activeTemplate, setActiveTemplate] = useState(TEMPLATES.bosque);
+
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [currentTimeSec, setCurrentTimeSec] = useState<number>(0);
+  const [selectedDoodleIndex, setSelectedDoodleIndex] = useState<number>(0);
+
   const requestRef = useRef<number | null>(null);
   const previousTimeRef = useRef<number | null>(null);
-  
-  const segments = sessionData?.video_prompt?.segments || [];
+
+  const stateRef = useRef({
+    isPlaying,
+    currentTimeSec,
+    isFastTrack,
+    activeSegmentId,
+    selectedDoodleIndex,
+    lastBreathingPhaseId: "" as "inhale" | "hold_in" | "exhale" | "hold_out" | "",
+  });
+
+  const segments = sessionData.video_prompt.segments;
+
   const segmentOffsets = useRef<number[]>([]);
-  const totalDurationSeconds = useRef(0);
-  const stateRef = useRef({ isPlaying, currentTimeSec, activeSegmentId, isFastTrack });
+  const totalDurationSeconds = useRef<number>(140 * 60);
 
   useEffect(() => {
-    let acc = 0;
+    let accSec = 0;
     const offsets: number[] = [];
-    segments.forEach(s => {
-      offsets.push(acc);
-      acc += s.duration_minutes * 60;
+    segments.forEach((seg) => {
+      offsets.push(accSec);
+      accSec += seg.duration_minutes * 60;
     });
     segmentOffsets.current = offsets;
-    totalDurationSeconds.current = acc;
+    totalDurationSeconds.current = accSec;
   }, [segments]);
 
   useEffect(() => {
-    stateRef.current = { isPlaying, currentTimeSec, activeSegmentId, isFastTrack };
-  }, [isPlaying, currentTimeSec, activeSegmentId, isFastTrack]);
+    stateRef.current.isPlaying = isPlaying;
+    stateRef.current.currentTimeSec = currentTimeSec;
+    stateRef.current.isFastTrack = isFastTrack;
+    stateRef.current.activeSegmentId = activeSegmentId;
+    stateRef.current.selectedDoodleIndex = selectedDoodleIndex;
+  }, [isPlaying, currentTimeSec, isFastTrack, activeSegmentId, selectedDoodleIndex]);
 
   useEffect(() => {
-    if (globalAudioEngine && globalAudioEngine.setVolumes) {
-        globalAudioEngine.setVolumes(binauralVolume, ambientVolume, doodleVolume);
+    setCurrentTimeSec(0);
+    stateRef.current.currentTimeSec = 0;
+    previousTimeRef.current = null;
+  }, [sessionData]);
+
+  useEffect(() => {
+    if (forceSec !== undefined && forceSec !== null) {
+      setCurrentTimeSec(forceSec);
+      stateRef.current.currentTimeSec = forceSec;
+
+      let targetSegIndex = 0;
+      for (let i = 0; i < segments.length; i++) {
+        const start = segmentOffsets.current[i];
+        const end = start + segments[i].duration_minutes * 60;
+        if (forceSec >= start && forceSec < end) {
+          targetSegIndex = i;
+          break;
+        }
+      }
+
+      const nextSegId = segments[targetSegIndex].id;
+      setActiveSegmentId(nextSegId);
+      stateRef.current.activeSegmentId = nextSegId;
+
+      const subSegId = getSubsegmentId(
+        nextSegId,
+        forceSec - segmentOffsets.current[targetSegIndex]
+      );
+
+      setTimeout(() => {
+        handleAudioForSegment(nextSegId, subSegId);
+      }, 50);
+
+      if (clearForceSec) clearForceSec();
     }
+  }, [forceSec]);
+
+  useEffect(() => {
+    globalAudioEngine.setVolumes(binauralVolume, ambientVolume, doodleVolume);
   }, [ambientVolume, binauralVolume, doodleVolume]);
 
-  const handleAudioForSegment = (segId: string, time: number) => {
-    if (!stateRef.current.isPlaying || !globalAudioEngine) return;
-    const segIdx = segments.findIndex(s => s.id === segId);
-    if (segIdx === -1) return;
-    const relSec = time - segmentOffsets.current[segIdx];
+  // ── AUDIO ──────────────────────────────────────────────────────────────────
+  const handleAudioForSegment = (segId: string, subSegId?: string) => {
+    if (!stateRef.current.isPlaying) {
+      globalAudioEngine.stopAll();
+      return;
+    }
 
-    try {
-        globalAudioEngine.resume();
-        if (segId === "break_1_doodle" && relSec >= 15) {
-            globalAudioEngine.stopBinaural();
-            globalAudioEngine.stopAmbient();
-            if (globalAudioEngine.startDoodleMusic) globalAudioEngine.startDoodleMusic();
-        } else if (segId.includes("block")) {
-            if (globalAudioEngine.stopDoodleMusic) globalAudioEngine.stopDoodleMusic();
-            globalAudioEngine.startAmbient();
-            const beatHz = segId === "block_1_alpha" ? 10 : 40;
-            globalAudioEngine.startBinaural(activeTemplate.frecuenciaBase, beatHz);
-        } else {
-            globalAudioEngine.stopBinaural();
-            if (globalAudioEngine.stopDoodleMusic) globalAudioEngine.stopDoodleMusic();
-        }
-    } catch (e) { console.error(e); }
+    if (segId === "block_1_alpha") {
+      globalAudioEngine.resume();
+      globalAudioEngine.startAmbient();
+      const seg1 = segments.find(s => s.id === "block_1_alpha");
+      const beatHz1 = seg1?.audio?.beat_frequency_hz || 10;
+      globalAudioEngine.startBinaural(200, beatHz1);
+      globalAudioEngine.stopDoodleMusic();
+    } else if (segId === "block_2_gamma") {
+      globalAudioEngine.resume();
+      globalAudioEngine.startAmbient();
+      const seg2 = segments.find(s => s.id === "block_2_gamma");
+      const beatHz2 = seg2?.audio?.beat_frequency_hz || 40;
+      globalAudioEngine.startBinaural(200, beatHz2);
+      globalAudioEngine.stopDoodleMusic();
+    } else if (segId === "break_1_doodle") {
+      globalAudioEngine.stopBinaural();
+      if (subSegId === "prep_timer") {
+        globalAudioEngine.stopAmbient();
+        globalAudioEngine.stopDoodleMusic();
+      } else {
+        globalAudioEngine.startDoodleMusic();
+        globalAudioEngine.stopAmbient();
+      }
+    } else if (segId === "break_2_breathing") {
+      globalAudioEngine.stopBinaural();
+      globalAudioEngine.stopAmbient();
+      globalAudioEngine.stopDoodleMusic();
+    } else {
+      globalAudioEngine.stopAll();
+    }
   };
 
-  const syncSegmentAndTime = (newTime: number) => {
-    if (segments.length === 0) return;
-    let targetIdx = 0;
+  // ── SEGMENT NAVIGATION ────────────────────────────────────────────────────
+  const updateActiveSegmentFromSeconds = (secs: number) => {
+    let targetSegIndex = 0;
     for (let i = 0; i < segments.length; i++) {
-      if (newTime >= segmentOffsets.current[i]) targetIdx = i;
+      const start = segmentOffsets.current[i];
+      const end = start + segments[i].duration_minutes * 60;
+      if (secs >= start && secs < end) {
+        targetSegIndex = i;
+        break;
+      }
     }
-    const nextSegId = segments[targetIdx].id;
-    setCurrentTimeSec(newTime);
-    setActiveSegmentId(nextSegId);
-    onTimeUpdate(newTime);
-    handleAudioForSegment(nextSegId, newTime);
+    if (secs >= totalDurationSeconds.current) {
+      targetSegIndex = segments.length - 1;
+    }
+
+    const nextSegId = segments[targetSegIndex].id;
+    if (nextSegId !== activeSegmentId) {
+      setActiveSegmentId(nextSegId);
+      setTimeout(() => {
+        const subSegId = getSubsegmentId(nextSegId, secs - segmentOffsets.current[targetSegIndex]);
+        handleAudioForSegment(nextSegId, subSegId);
+      }, 50);
+    }
   };
 
-  const animate = (time: number) => {
-    if (previousTimeRef.current !== null && stateRef.current.isPlaying) {
-      const delta = (time - previousTimeRef.current) / 1000;
-      const multiplier = stateRef.current.isFastTrack ? 120 : 1;
-      const nextTime = stateRef.current.currentTimeSec + (delta * multiplier);
-      if (nextTime >= totalDurationSeconds.current) {
-        setIsPlaying(false);
-        if (globalAudioEngine) globalAudioEngine.stopAll();
-      } else { syncSegmentAndTime(nextTime); }
+  const getSubsegmentId = (segId: string, segmentRelSec: number): string | undefined => {
+    if (segId === "break_1_doodle") {
+      if (segmentRelSec < 15) return "prep_timer";
+      return "doodle_session";
     }
+    return undefined;
+  };
+
+  // ── ANIMATION LOOP ────────────────────────────────────────────────────────
+  const animate = (time: number) => {
+    if (previousTimeRef.current !== null) {
+      const deltaMs = time - previousTimeRef.current;
+
+      if (stateRef.current.isPlaying) {
+        const multiplier = stateRef.current.isFastTrack ? 120.0 : 1.0;
+        const secondsToAdd = (deltaMs / 1000) * multiplier;
+        let nextSeconds = stateRef.current.currentTimeSec + secondsToAdd;
+
+        if (nextSeconds >= totalDurationSeconds.current) {
+          nextSeconds = 0;
+          setIsPlaying(false);
+          globalAudioEngine.stopAll();
+        }
+
+        setCurrentTimeSec(nextSeconds);
+        onTimeUpdate(nextSeconds);
+        updateActiveSegmentFromSeconds(nextSeconds);
+      }
+    }
+
     previousTimeRef.current = time;
     renderFrame();
     requestRef.current = requestAnimationFrame(animate);
   };
 
   useEffect(() => {
+    if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    previousTimeRef.current = null;
     requestRef.current = requestAnimationFrame(animate);
-    return () => { if (requestRef.current) cancelAnimationFrame(requestRef.current); };
-  }, [activeTemplate, isPlaying]);
-
-  const drawRiver = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
-    const mainColor = activeTemplate.colorPrincipal;
-    const darkColor = activeTemplate.colorSecundario;
-    const timeScale = Date.now() * 0.0008; 
-    
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, "#050A14");
-    grad.addColorStop(0.5, "#0A0F1E");
-    grad.addColorStop(1, "#02050A");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
-
-    const renderWaveLayer = (layerIdx: number, baseHeight: number, waveHeight: number, speed: number, color: string, alpha: number) => {
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(0, h);
-      for (let i = 0; i <= 40; i++) {
-        const x = (i / 40) * w;
-        const wave = Math.sin((i * 0.15) + (timeScale * speed) + layerIdx);
-        const y = baseHeight + wave * waveHeight;
-        ctx.lineTo(x, y);
-      }
-      ctx.lineTo(w, h);
-      ctx.fill();
-      ctx.restore();
+    return () => {
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
+  }, [activeSegmentId, selectedDoodleIndex, sessionData]);
 
-    renderWaveLayer(1, h * 0.45, 20, 0.4, darkColor, 0.3);
-    renderWaveLayer(2, h * 0.55, 15, 0.7, mainColor, 0.4);
-    renderWaveLayer(3, h * 0.70, 10, 1.1, "#FFFFFF", 0.1); 
-    renderWaveLayer(4, h * 0.82, 18, 0.6, mainColor, 0.4);
-  };
-
+  // ── RENDER FRAME ──────────────────────────────────────────────────────────
   const renderFrame = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+
     const w = canvas.width;
     const h = canvas.height;
-    const currentId = stateRef.current.activeSegmentId;
-    const segIdx = segments.findIndex(s => s.id === currentId);
-    
-    if (segIdx === -1) {
-        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h); return;
-    }
 
-    const relSec = stateRef.current.currentTimeSec - segmentOffsets.current[segIdx];
-    ctx.fillStyle = "#0A0F1A"; ctx.fillRect(0, 0, w, h);
+    let activeSegIndex = segments.findIndex(s => s.id === stateRef.current.activeSegmentId);
+    if (activeSegIndex === -1) activeSegIndex = 0;
+    const seg = segments[activeSegIndex];
+    const segStart = segmentOffsets.current[activeSegIndex];
+    const segRelSec = stateRef.current.currentTimeSec - segStart;
 
-    if (currentId.includes("block")) {
-        drawRiver(ctx, w, h);
-    } else if (currentId === "break_1_doodle") {
-        if (relSec < 15) drawTimer(ctx, w, h, 15 - relSec);
-        else drawDoodle(ctx, w, h, (relSec - 15) / 585);
-    } else {
-        ctx.fillStyle = "#0A0F1A"; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#0A0F1A";
+    ctx.fillRect(0, 0, w, h);
+
+    if (seg.id === "block_1_alpha" || seg.id === "block_2_gamma") {
+      drawRiverFlow(ctx, w, h, stateRef.current.currentTimeSec, seg.id);
+      drawOverlays(ctx, w, h, seg, segRelSec);
+    } else if (seg.id === "break_1_doodle") {
+      const isPrep = segRelSec < 15;
+      if (isPrep) {
+        drawPrepTimer(ctx, w, h, segRelSec);
+      } else {
+        const doodleRelSec = segRelSec - 15;
+        const durationSec = 9 * 60 + 45;
+        const progress = Math.min(doodleRelSec / durationSec, 1.0);
+        drawDoodleSession(ctx, w, h, progress, doodleRelSec);
+      }
+    } else if (seg.id === "break_2_breathing") {
+      drawBoxBreathing(ctx, w, h, segRelSec);
     }
   };
 
-  const drawTimer = (ctx: CanvasRenderingContext2D, w: number, h: number, rem: number) => {
-    ctx.fillStyle = "#FFF";
-    ctx.font = "30px Inter";
-    ctx.textAlign = "center";
-    ctx.fillText(`Prepárate: ${Math.ceil(rem)}s`, w/2, h/2);
-  };
+  // ── DRAW RIVER ────────────────────────────────────────────────────────────
+  const drawRiverFlow = (ctx: CanvasRenderingContext2D, w: number, h: number, elapsedSec: number, segId: string) => {
+    const activeSeg = segments.find(s => s.id === segId);
+    const palette = activeSeg?.visual?.color_palette;
+    const color1 = palette?.primary || "#A8C8B8";
+    const color2 = palette?.secondary || "#D4E8E0";
+    const color3 = palette?.accent || "#8BB5C8";
+    const bgDark = palette?.primary ? palette.primary + "22" : "#081C15";
 
-  const drawDoodle = (ctx: CanvasRenderingContext2D, w: number, h: number, progress: number) => {
-    const cx = w / 2; const cy = h / 2;
-    const getCoords = (p: number) => {
-        const loops = 12; 
-        const angle = p * Math.PI * loops;
-        const r = p * (h / 2.5);
-        return { x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r };
+    const timeScale = elapsedSec * 0.4;
+
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, bgDark);
+    grad.addColorStop(0.5, "#0A0F1A");
+    grad.addColorStop(1, "#040810");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    const renderWaveLayer = (layerIdx: number, baseHeight: number, waveHeight: number, speedMult: number, color: string, alpha: number) => {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+      const segmentsCount = 60;
+      for (let i = 0; i <= segmentsCount; i++) {
+        const x = (i / segmentsCount) * w;
+        const slowSwell = Math.sin((i / 8) + timeScale * speedMult + layerIdx);
+        const fastRipple = Math.cos((i / 2) - timeScale * 1.5 * speedMult + layerIdx * 2) * 2;
+        const swellShift = Math.sin(timeScale * 0.1 + layerIdx) * waveHeight * 0.3;
+        const y = baseHeight + slowSwell * waveHeight + fastRipple + swellShift;
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(w, h);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
     };
-    ctx.strokeStyle = activeTemplate.colorPrincipal;
+
+    renderWaveLayer(0, h * 0.40, 24, 0.4, color3, 0.12);
+    renderWaveLayer(1, h * 0.48, 18, 0.6, color1, 0.16);
+    renderWaveLayer(2, h * 0.55, 14, 0.8, color2, 0.18);
+    renderWaveLayer(3, h * 0.64, 20, 0.5, color3, 0.15);
+    renderWaveLayer(4, h * 0.72, 12, 1.1, color1, 0.22);
+
+    ctx.save();
+    ctx.fillStyle = color2;
+    for (let i = 0; i < 15; i++) {
+      const seed = Math.sin(i * 123.456) * 500;
+      const x = Math.abs(seed + timeScale * 15) % (w + 40) - 20;
+      const y = Math.abs(Math.cos(i * 88.2) * (h - 100)) + 50 + Math.sin(timeScale * 0.2 + i) * 15;
+      const size = Math.abs(Math.sin(i + timeScale * 0.1)) * 2 + 1;
+      ctx.globalAlpha = 0.3 * Math.abs(Math.sin(timeScale * 0.05 + i));
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    ctx.save();
+    ctx.font = "italic 300 13px 'Inter', sans-serif";
+    ctx.fillStyle = color3;
+    ctx.globalAlpha = 0.45;
+    ctx.textAlign = "left";
+    ctx.fillText(segId === "block_1_alpha" ? "ALPHA WAVES  ·  FOCUS FLOW" : "GAMMA WAVES  ·  COGNITIVE FOCUS", 25, 35);
+    ctx.restore();
+  };
+
+  // ── DRAW OVERLAYS ─────────────────────────────────────────────────────────
+  const drawOverlays = (ctx: CanvasRenderingContext2D, w: number, h: number, seg: Segment, relSec: number) => {
+    const totalSec = seg.duration_minutes * 60;
+    const remainingSec = Math.max(totalSec - relSec, 0);
+    const m = Math.floor(remainingSec / 60);
+    const s = Math.floor(remainingSec % 60);
+    const timeStr = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "300 24px 'Inter', sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(timeStr, w - 24, h - 24);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle = "#D4E8E0";
+    ctx.font = "500 10px 'JetBrains Mono', monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(seg.label.toUpperCase(), w - 25, 35);
+    ctx.restore();
+
+    ctx.save();
+    const progress = relSec / totalSec;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+    ctx.fillRect(0, h - 3, w, 3);
+    ctx.fillStyle = "#A8C8B8";
+    ctx.fillRect(0, h - 3, w * progress, 3);
+    ctx.restore();
+  };
+
+  // ── DRAW PREP TIMER ───────────────────────────────────────────────────────
+  const drawPrepTimer = (ctx: CanvasRenderingContext2D, w: number, h: number, elapsedSec: number) => {
+    const duration = 15;
+    const remaining = Math.max(duration - elapsedSec, 0);
+    const percentage = remaining / duration;
+
+    const radial = ctx.createRadialGradient(w/2, h/2, 20, w/2, h/2, 200);
+    radial.addColorStop(0, "#0D1627");
+    radial.addColorStop(1, "#060A12");
+    ctx.fillStyle = radial;
+    ctx.fillRect(0, 0, w, h);
+
+    const radius = 64;
+    const cx = w / 2;
+    const cy = h / 2 - 20;
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, -Math.PI / 2, (-Math.PI / 2) + Math.PI * 2 * percentage, true);
+    ctx.strokeStyle = "#F5F0E8";
     ctx.lineWidth = 3;
     ctx.lineCap = "round";
+    ctx.stroke();
+
+    ctx.save();
+    ctx.fillStyle = "#F5F0E8";
+    ctx.font = "300 48px 'Inter', sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(Math.ceil(remaining).toString(), cx, cy);
+    ctx.restore();
+
+    ctx.save();
+    ctx.fillStyle = "#F5F0E8";
+    ctx.globalAlpha = 0.85;
+    ctx.font = "italic 300 16px 'Inter', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Toma tu lápiz y papel. Prepárate para fluir.", cx, cy + radius + 45);
+    ctx.font = "500 10px 'JetBrains Mono', monospace";
+    ctx.fillStyle = "#8BB5C8";
+    ctx.globalAlpha = 0.4;
+    ctx.fillText("DOODLE PREPARATION PHASE", cx, cy + radius + 75);
+    ctx.restore();
+  };
+
+  // ── DRAW DOODLE ───────────────────────────────────────────────────────────
+  const getDoodleCoordinates = (typeIdx: number, p: number): { x: number; y: number } => {
+    const cx = 350;
+    const cy = 200;
+
+    switch (typeIdx) {
+      case 0: {
+        if (p < 0.6) {
+          const lp = p / 0.6;
+          const angle = -Math.PI * 0.7 + lp * (Math.PI * 1.4);
+          const r = 90;
+          return { x: cx + Math.cos(angle) * r - 20, y: cy + Math.sin(angle) * r };
+        } else {
+          const sp = (p - 0.6) / 0.4;
+          const theta = sp * Math.PI * 6;
+          const r = 30 + sp * 50;
+          return { x: cx + Math.cos(theta) * r + 40, y: cy + Math.sin(theta) * r };
+        }
+      }
+      case 1: {
+        const theta = p * Math.PI * 12;
+        const petaledRadius = 45 + 40 * Math.sin(6 * theta);
+        return { x: cx + Math.cos(theta) * petaledRadius, y: cy + Math.sin(theta) * petaledRadius };
+      }
+      case 2: {
+        const nodes = [
+          { x: cx - 120, y: cy - 40 }, { x: cx - 70, y: cy - 50 },
+          { x: cx - 20, y: cy - 20 }, { x: cx + 20, y: cy + 35 },
+          { x: cx + 55, y: cy + 45 }, { x: cx + 120, y: cy + 40 },
+          { x: cx + 90, y: cy - 30 }, { x: cx + 20, y: cy + 35 }
+        ];
+        const segCount = nodes.length - 1;
+        const currentSegIndex = Math.min(Math.floor(p * segCount), segCount - 1);
+        const segProgress = (p * segCount) - currentSegIndex;
+        const n1 = nodes[currentSegIndex];
+        const n2 = nodes[currentSegIndex + 1];
+        return { x: n1.x + (n2.x - n1.x) * segProgress, y: n1.y + (n2.y - n1.y) * segProgress };
+      }
+      case 3: {
+        const lobes = 8;
+        const theta = p * Math.PI * 2;
+        const sineMultiplier = Math.abs(Math.sin(lobes * theta / 2));
+        const r = 30 + 75 * sineMultiplier;
+        return { x: cx + Math.sin(theta) * r, y: cy - Math.cos(theta) * r + 20 };
+      }
+      case 4:
+      default: {
+        if (p < 0.4) {
+          const l1p = p / 0.4;
+          const x = -130 + 260 * l1p;
+          const y = -45 * Math.sin(l1p * Math.PI);
+          return { x: cx + x, y: cy + y };
+        } else if (p < 0.8) {
+          const l2p = (p - 0.4) / 0.4;
+          const x = 130 - 260 * l2p;
+          const y = 45 * Math.sin(l2p * Math.PI);
+          return { x: cx + x, y: cy + y };
+        } else {
+          const pupilProg = (p - 0.8) / 0.2;
+          const angle = pupilProg * Math.PI * 2;
+          const r = 35;
+          return { x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r };
+        }
+      }
+    }
+  };
+
+  const drawDoodleSession = (ctx: CanvasRenderingContext2D, w: number, h: number, progress: number, elapsedSec: number) => {
+    ctx.fillStyle = "#030712";
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.save();
+    ctx.fillStyle = "#FFFFFF";
+    for (let i = 0; i < 40; i++) {
+      const seedVal = Math.sin(i * 456.789);
+      const sx = Math.abs(seedVal * 123456) % w;
+      const sy = Math.abs(seedVal * 789123) % h;
+      ctx.globalAlpha = 0.08 + Math.abs(Math.sin(elapsedSec * 0.05 + i)) * 0.12;
+      ctx.fillRect(sx, sy, 1, 1);
+    }
+    ctx.restore();
+
+    const drawIdx = stateRef.current.selectedDoodleIndex;
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(232, 213, 163, 0.55)";
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = "#E8D5A3";
+    ctx.shadowBlur = 1;
     ctx.beginPath();
-    for (let i = 0; i <= progress; i += 0.002) {
-        const p = getCoords(i);
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
+    const steps = 300;
+    const currentMaxStep = Math.ceil(progress * steps);
+    for (let i = 0; i <= currentMaxStep; i++) {
+      const t = i / steps;
+      const pt = getDoodleCoordinates(drawIdx, t);
+      const scaleX = w / 700;
+      const scaleY = h / 400;
+      const canvasX = pt.x * scaleX;
+      const canvasY = pt.y * scaleY;
+      if (i === 0) ctx.moveTo(canvasX, canvasY);
+      else ctx.lineTo(canvasX, canvasY);
     }
     ctx.stroke();
-    const head = getCoords(progress);
-    ctx.fillStyle = "#FFF";
-    ctx.shadowBlur = 10; ctx.shadowColor = "#FFF";
-    ctx.beginPath(); ctx.arc(head.x, head.y, 6, 0, Math.PI*2); ctx.fill();
-    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    const leadPt = getDoodleCoordinates(drawIdx, progress);
+    const scaleX = w / 700;
+    const scaleY = h / 400;
+    const lx = leadPt.x * scaleX;
+    const ly = leadPt.y * scaleY;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(lx, ly, 7, 0, Math.PI * 2);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = "#E8D5A3";
+    ctx.fill();
+    ctx.restore();
+
+    if (elapsedSec < 10) {
+      const op = 1.0 - (elapsedSec / 10);
+      ctx.save();
+      ctx.globalAlpha = op * 0.7;
+      ctx.fillStyle = "#E8D5A3";
+      ctx.font = "italic 400 15px 'Inter', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Sigue el trazo con tu lápiz. No pienses. Solo fluye.", w / 2, 50);
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.fillStyle = "#E8D5A3";
+    ctx.globalAlpha = 0.25;
+    ctx.font = "500 9px 'JetBrains Mono', monospace";
+    ctx.textAlign = "center";
+    const titleOptions = [
+      "LUNA CELESTIAL Y ESPIRAL DE ESTRELLAS", "MANDALA SAGRADO CIRCULAR",
+      "CONSTELACIÓN ESTELAR MAJESTUOSA", "PÉTALOS DE FLOR DE LOTO GEOMÉTRICA",
+      "OJO CÓSMICO DE LA GALAXIA LEJANA"
+    ];
+    ctx.fillText(`DOODLE: ${titleOptions[drawIdx]} (${Math.floor(progress * 100)}% COMPLETADO)`, w / 2, h - 30);
+    ctx.restore();
+  };
+
+  // ── DRAW BOX BREATHING ────────────────────────────────────────────────────
+  const drawBoxBreathing = (ctx: CanvasRenderingContext2D, w: number, h: number, elapsedSec: number) => {
+    ctx.fillStyle = "#0A0E17";
+    ctx.fillRect(0, 0, w, h);
+
+    const period = 16;
+    const cycleRel = elapsedSec % period;
+    const phaseIndex = Math.floor(cycleRel / 4);
+    const phaseRelSec = cycleRel % 4;
+
+    const phases = [
+      { id: "inhale", label: "Inhala", color: "#A8D8EA" },
+      { id: "hold_in", label: "Sostén", color: "#E8D5A3" },
+      { id: "exhale", label: "Exhala", color: "#B8E0B8" },
+      { id: "hold_out", label: "Sostén sin aire", color: "#D4A8C8" }
+    ];
+
+    const curPhase = phases[phaseIndex];
+
+    if (curPhase.id !== stateRef.current.lastBreathingPhaseId) {
+      if (stateRef.current.isPlaying) globalAudioEngine.playChime();
+      stateRef.current.lastBreathingPhaseId = curPhase.id as "inhale" | "hold_in" | "exhale" | "hold_out";
+    }
+
+    const boxSize = Math.min(w * 0.45, h * 0.65);
+    const bx = w / 2 - boxSize / 2;
+    const by = h / 2 - boxSize / 2;
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(226, 241, 255, 0.12)";
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = curPhase.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const r = 16;
+    ctx.moveTo(bx + r, by);
+    ctx.lineTo(bx + boxSize - r, by);
+    ctx.quadraticCurveTo(bx + boxSize, by, bx + boxSize, by + r);
+    ctx.lineTo(bx + boxSize, by + boxSize - r);
+    ctx.quadraticCurveTo(bx + boxSize, by + boxSize, bx + boxSize - r, by + boxSize);
+    ctx.lineTo(bx + r, by + boxSize);
+    ctx.quadraticCurveTo(bx, by + boxSize, bx, by + boxSize - r);
+    ctx.lineTo(bx, by + r);
+    ctx.quadraticCurveTo(bx, by, bx + r, by);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+
+    let ballX = bx;
+    let ballY = by + boxSize;
+    const progress = phaseRelSec / 4;
+
+    if (phaseIndex === 0) {
+      ballX = bx;
+      ballY = (by + boxSize) - (boxSize * progress);
+    } else if (phaseIndex === 1) {
+      ballX = bx + (boxSize * progress);
+      ballY = by;
+    } else if (phaseIndex === 2) {
+      ballX = bx + boxSize;
+      ballY = by + (boxSize * progress);
+    } else if (phaseIndex === 3) {
+      ballX = (bx + boxSize) - (boxSize * progress);
+      ballY = by + boxSize;
+    }
+
+    ctx.save();
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = curPhase.color;
+    ctx.fillStyle = curPhase.color;
+    ctx.beginPath();
+    ctx.arc(ballX, ballY, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = curPhase.color;
+    ctx.font = "italic 300 28px 'Inter', sans-serif";
+    ctx.fillText(curPhase.label, w / 2, h / 2 - 25);
+
+    const bubbleSize = 35 + Math.sin(phaseRelSec * Math.PI / 2) * 12;
+    ctx.beginPath();
+    ctx.arc(w / 2, h / 2 + 30, bubbleSize, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255, 255, 255, 0.04)`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = "#E2F1FF";
+    ctx.globalAlpha = 0.8;
+    ctx.font = "300 18px 'JetBrains Mono', monospace";
+    const countNum = Math.floor(phaseRelSec) + 1;
+    let subStr = "·   ·   ·   ·";
+    if (countNum === 1) subStr = "1   ·   ·   ·";
+    else if (countNum === 2) subStr = "1   2   ·   ·";
+    else if (countNum === 3) subStr = "1   2   3   ·";
+    else if (countNum === 4) subStr = "1   2   3   4";
+    ctx.fillText(subStr, w / 2, h / 2 + 30);
+    ctx.restore();
+
+    const totalCycles = 37;
+    const currentCycleNum = Math.floor(elapsedSec / period) + 1;
+    ctx.save();
+    ctx.fillStyle = "#FFFFFF";
+    ctx.globalAlpha = 0.25;
+    ctx.font = "500 10px 'JetBrains Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(`BOX BREATHING  ·  CICLO ${currentCycleNum} DE ${totalCycles}`, w / 2, h - 35);
+    ctx.restore();
+  };
+
+  // ── HELPERS ───────────────────────────────────────────────────────────────
+  const formatTime = (secs: number) => {
+    const hours = Math.floor(secs / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    const s = Math.floor(secs % 60);
+    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
   const handleTogglePlay = () => {
-    const next = !isPlaying;
-    setIsPlaying(next);
-    stateRef.current.isPlaying = next;
-    setTimeout(() => handleAudioForSegment(activeSegmentId, currentTimeSec), 50);
+    const nextPlay = !isPlaying;
+    setIsPlaying(nextPlay);
+    stateRef.current.isPlaying = nextPlay;
+    let activeSegIndex = segments.findIndex(s => s.id === stateRef.current.activeSegmentId);
+    if (activeSegIndex === -1) activeSegIndex = 0;
+    const seg = segments[activeSegIndex];
+    const segStart = segmentOffsets.current[activeSegIndex];
+    const subSegId = getSubsegmentId(seg.id, stateRef.current.currentTimeSec - segStart);
+    setTimeout(() => { handleAudioForSegment(seg.id, subSegId); }, 50);
   };
 
+  const handleReset = () => {
+    setIsPlaying(false);
+    stateRef.current.isPlaying = false;
+    setCurrentTimeSec(0);
+    onTimeUpdate(0);
+    updateActiveSegmentFromSeconds(0);
+    globalAudioEngine.stopAll();
+  };
+
+  const handleTimelineChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    setCurrentTimeSec(val);
+    stateRef.current.currentTimeSec = val;
+    onTimeUpdate(val);
+
+    let targetSegIndex = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const start = segmentOffsets.current[i];
+      const end = start + segments[i].duration_minutes * 60;
+      if (val >= start && val < end) { targetSegIndex = i; break; }
+    }
+    if (val >= totalDurationSeconds.current) targetSegIndex = segments.length - 1;
+
+    const nextSegId = segments[targetSegIndex].id;
+    setActiveSegmentId(nextSegId);
+    stateRef.current.activeSegmentId = nextSegId;
+
+    const subSegId = getSubsegmentId(nextSegId, val - segmentOffsets.current[targetSegIndex]);
+    setTimeout(() => { handleAudioForSegment(nextSegId, subSegId); }, 50);
+  };
+
+  const getActivePalette = () => {
+    const seg = segments.find(s => s.id === activeSegmentId);
+    if (seg?.visual?.color_palette) {
+      return {
+        primary: seg.visual.color_palette.primary || "#A8C8B8",
+        secondary: seg.visual.color_palette.secondary || "#D4E8E0",
+        accent: seg.visual.color_palette.accent || "#8BB5C8"
+      };
+    }
+    if (activeSegmentId === "break_1_doodle") return { primary: "#E8D5A3", secondary: "#FFFDF9", accent: "#F0B548" };
+    if (activeSegmentId === "break_2_breathing") return { primary: "#B8E0B8", secondary: "#E2F1FF", accent: "#A8D8EA" };
+    return { primary: "#A8C8B8", secondary: "#D4E8E0", accent: "#8BB5C8" };
+  };
+
+  // ── JSX ───────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-2xl">
-      <div className="relative aspect-video bg-black">
-        <canvas ref={canvasRef} width={720} height={405} className="w-full h-full" onClick={handleTogglePlay}/>
+    <div id="video_player_module" className="flex flex-col bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
+
+      <div className="relative aspect-video w-full bg-black leading-none">
+        <canvas
+          ref={canvasRef}
+          width={720}
+          height={405}
+          id="focus_video_canvas"
+          className="w-full h-full block cursor-pointer"
+          onClick={handleTogglePlay}
+        />
+
         {!isPlaying && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/40 cursor-pointer" onClick={handleTogglePlay}>
-                <div className="w-16 h-16 bg-teal-500 rounded-full flex items-center justify-center">
-                    <Play size={32} fill="currentColor" className="ml-1 text-slate-900" />
-                </div>
-            </div>
+          <button
+            onClick={handleTogglePlay}
+            id="play_canvas_overlay"
+            className="absolute inset-0 m-auto w-16 h-16 rounded-full bg-teal-500/90 text-slate-950 flex items-center justify-center hover:bg-teal-400 hover:scale-105 active:scale-95 transition cursor-pointer shadow-lg outline-none"
+          >
+            <Play className="fill-current w-6 h-6 ml-1" />
+          </button>
+        )}
+
+        <div id="headphones_pill" className="absolute top-4 left-4 flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-950/70 text-slate-300 text-[10px] font-mono border border-white/5 pointer-events-none">
+          <Headphones className="w-3.5 h-3.5 text-teal-400 animate-pulse" />
+          <span>AURICULARES RECOMENDADOS (BINAURAL)</span>
+        </div>
+
+        {isFastTrack && (
+          <div id="fast_mode_pill" className="absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/80 text-amber-950 text-[10px] font-bold tracking-wider animate-pulse pointer-events-none shadow-md">
+            <FastForward className="w-3.5 h-3.5" />
+            <span>MODO PRUEBA RÁPIDA (120x)</span>
+          </div>
         )}
       </div>
-      <div className="p-4 bg-slate-950 space-y-4">
-        <div className="flex gap-2 overflow-x-auto">
-            {Object.values(TEMPLATES).map((t: any) => (
-                <button 
-                    key={t.id} 
-                    onClick={() => {
-                        setActiveTemplate(t);
-                        if(isPlaying) setTimeout(() => handleAudioForSegment(activeSegmentId, currentTimeSec), 50);
-                    }}
-                    className={`px-3 py-1 rounded-full text-[10px] font-bold whitespace-nowrap transition ${activeTemplate.id === t.id ? 'bg-teal-500 text-slate-900' : 'bg-slate-800 text-slate-400'}`}
-                >
-                    {t.nombre}
-                </button>
-            ))}
+
+      <div id="player_controls_bar" className="p-4 bg-slate-950/80 border-t border-slate-800 flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] font-mono text-slate-400 w-16 text-left shrink-0">{formatTime(currentTimeSec)}</span>
+          <input
+            type="range" min={0} id="video_timeline_seek"
+            max={totalDurationSeconds.current} value={currentTimeSec}
+            onChange={handleTimelineChange}
+            className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-teal-400 hover:accent-teal-300"
+          />
+          <span className="text-[11px] font-mono text-slate-400 w-16 text-right shrink-0">{formatTime(totalDurationSeconds.current)}</span>
         </div>
-        <input 
-            type="range" min={0} max={totalDurationSeconds.current || 100} value={currentTimeSec}
-            onChange={(e) => syncSegmentAndTime(parseFloat(e.target.value))}
-            className="w-full accent-teal-500"
-        />
-        <div className="flex justify-between items-center">
-            <button onClick={handleTogglePlay} className="text-teal-400 p-2 bg-slate-800 rounded-lg">
-                {isPlaying ? <Pause size={20}/> : <Play size={20} fill="currentColor"/>}
+
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <div className="flex items-center gap-2">
+            <button onClick={handleTogglePlay} id="btn_play_pause"
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold cursor-pointer select-none transition ${isPlaying ? "bg-slate-800 text-teal-400 border border-teal-500/20 hover:bg-slate-700" : "bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold"}`}>
+              {isPlaying ? (<><Pause className="w-3.5 h-3.5" /><span>Pausar</span></>) : (<><Play className="fill-current w-3.5 h-3.5" /><span>Iniciar Sesión</span></>)}
             </button>
-            <span className="font-mono text-xs text-slate-400">
-                {Math.floor(currentTimeSec / 60)}:{(currentTimeSec % 60).toFixed(0).padStart(2, '0')}
-            </span>
-            <button 
-                onClick={() => setIsFastTrack(!isFastTrack)}
-                className={`px-2 py-1 rounded text-[10px] font-bold ${isFastTrack ? 'bg-amber-500 text-black' : 'bg-slate-800 text-slate-500'}`}
-            >
-                MODO PRUEBA
+            <button onClick={handleReset} id="btn_reset_player"
+              className="flex items-center gap-1 px-3 py-1.5 bg-slate-800/80 border border-slate-700/50 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium cursor-pointer transition">
+              <RotateCcw className="w-3.5 h-3.5" /><span>Reiniciar</span>
             </button>
+          </div>
+
+          {activeSegmentId === "break_1_doodle" && currentTimeSec - segmentOffsets.current[1] >= 15 && (
+            <div id="doodle_selector_group" className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
+              <span className="text-[10px] font-mono text-slate-400 px-2 shrink-0 uppercase">Dibujo celestial:</span>
+              <select id="select_doodle_type" value={selectedDoodleIndex}
+                onChange={(e) => setSelectedDoodleIndex(parseInt(e.target.value))}
+                className="bg-slate-950 border-none outline-none text-teal-300 text-xs py-0.5 px-2 rounded font-medium cursor-pointer">
+                <option value={0}>Luna Creciente</option>
+                <option value={1}>Mandala Sagrado</option>
+                <option value={2}>Constelación</option>
+                <option value={3}>Flor de Loto</option>
+                <option value={4}>Ojo Cósmico</option>
+              </select>
+            </div>
+          )}
+
+          <div className="flex items-center gap-1.5 bg-slate-900/60 p-1 border border-slate-800 rounded-lg select-none shrink-0">
+            <button onClick={() => { setIsFastTrack(false); stateRef.current.isFastTrack = false; }} id="btn_mode_real"
+              className={`px-3 py-1 rounded text-[10px] font-semibold transition cursor-pointer ${!isFastTrack ? "bg-teal-500/15 text-teal-300 border border-teal-500/30" : "text-slate-400 hover:text-slate-200"}`}>
+              Real (2h 20m)
+            </button>
+            <button onClick={() => { setIsFastTrack(true); stateRef.current.isFastTrack = true; }} id="btn_mode_fast"
+              className={`flex items-center gap-1 px-3 py-1 rounded text-[10px] font-semibold transition cursor-pointer ${isFastTrack ? "bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold" : "text-slate-400 hover:text-slate-200"}`}>
+              <FastForward className="w-3 h-3" /><span>Simulador-Prueba (70s)</span>
+            </button>
+          </div>
         </div>
       </div>
-      {activeTemplate && (
-          <Spectrogram 
-            activeSegmentId={activeSegmentId} 
-            isPlaying={isPlaying} 
-            currentTimeSec={currentTimeSec} 
-            palette={{primary: activeTemplate.colorPrincipal, secondary: activeTemplate.colorSecundario, accent: "#FFF"}}
-          />
-      )}
+
+      <Spectrogram activeSegmentId={activeSegmentId} isPlaying={isPlaying} currentTimeSec={currentTimeSec} palette={getActivePalette()} />
+
+      <div id="player_guidance_footer" className="p-3 bg-slate-950 border-t border-slate-900 flex items-start gap-2.5">
+        <Info className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
+        <p className="text-[11px] font-sans text-slate-400 leading-relaxed">
+          {activeSegmentId === "block_1_alpha" && <span><strong>Ondas Alfa (10 Hz):</strong> El cerebro entra en un estado de concentración relajada ideal para programar, diseñar o leer.</span>}
+          {activeSegmentId === "break_1_doodle" && <span><strong>Pausa Creativa — Doodle:</strong> Sigue el trazo luminoso dorado con un lápiz para liberar fatiga cognitiva.</span>}
+          {activeSegmentId === "block_2_gamma" && <span><strong>Ondas Gamma (40 Hz):</strong> Estimula la resolución de problemas abstractos y procesamiento de alta velocidad.</span>}
+          {activeSegmentId === "break_2_breathing" && <span><strong>Box Breathing 4-4-4-4:</strong> Reduce la frecuencia cardíaca. Sigue la esfera de luz.</span>}
+        </p>
+      </div>
     </div>
   );
 }
