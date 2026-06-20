@@ -6,7 +6,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
@@ -137,9 +137,9 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[Full-Stack Node Server] Up and running on ingress URL port http://localhost:${PORT}`);
-  });
+ app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[Full-Stack Node Server] Up and running dynamically on port ${PORT}`);
+});
 }
 
 startServer();
