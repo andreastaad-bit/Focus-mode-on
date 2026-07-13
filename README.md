@@ -17,34 +17,6 @@ Este proyecto define la estructura de producción completa para un video de YouT
 
 ---
 
-## 🗂️ Estructura del repositorio
-
-```
-deep-focus-session/
-│
-├── prompt/
-│   └── video_prompt.json          # Prompt principal de producción (estructura completa del video)
-│
-├── assets/
-│   ├── audio/
-│   │   ├── alpha_10hz_60min.wav   # Pista binaural Ondas Alfa (8-12 Hz)
-│   │   └── gamma_40hz_60min.wav   # Pista binaural Ondas Gamma (>30 Hz)
-│   ├── video/
-│   │   └── river_loop.mp4         # Metraje de río (mínimo 5 min para loop)
-│   └── animation/
-│       └── doodle_celestial.*     # Animación del doodle guiado (After Effects / Rive)
-│
-├── config/
-│   └── color_grade.cube           # LUT para el color grading del río (DaVinci Resolve)
-│
-├── docs/
-│   └── production_notes.md        # Notas técnicas detalladas de producción
-│
-└── README.md
-```
-
----
-
 ## ⏱️ Estructura del video
 
 | Segmento | Inicio | Fin | Duración | Frecuencia | Visual |
